@@ -3,13 +3,13 @@ import cv2
 import glob
 
 class Camera:
-    def __init__(self):
-        ret, mtx, dist, rvecs, tvecs, chessboards = self.calibrate_camera(glob.glob('../camera_cal/calibration*.jpg'))
+    def __init__(self, dir):
+        ret, mtx, dist, rvecs, tvecs, chessboards = self.calibrate_camera(glob.glob('{}/*.jpg'.format(dir)))
 
         self.mtx = mtx
         self.dist = dist
 
-    def undistort(self, image, remove_hood=False):
+    def undistort(self, image):
         h, w = image.shape[:2]
         newcameramtx, roi = cv2.getOptimalNewCameraMatrix(self.mtx, self.dist, (w, h), 1, (w, h))
 
@@ -63,15 +63,16 @@ class Perspective:
 
         x_center = self.w / 2
 
-        # self.polygon = np.array([x_center - 115, self.h - 200,
-        #                  x_center + 84, self.h - 200,
-        #                  150 + x_center_shift / 2, self.h,
-        #                  self.w - 150 + x_center_shift / 2, self.h], dtype = "float32").reshape(4, 2)
-
-        self.polygon = np.array([x_center - 125, self.h - 200,
-                         x_center + 125, self.h - 200,
-                         x_center - 550, self.h,
-                         x_center + 550, self.h], dtype = "float32").reshape(4, 2)
+        ### Symetric
+        # self.polygon = np.array([x_center - 127, self.h - 200,
+        #                 x_center + 127, self.h - 200,
+        #                 x_center - 550, self.h,
+        #                 x_center + 550, self.h], dtype = "float32").reshape(4, 2)
+        
+        self.polygon = np.array([x_center - 105, self.h - 200,
+                         x_center + 142, self.h - 200,
+                         x_center - 520, self.h,
+                         x_center + 600, self.h], dtype = "float32").reshape(4, 2)
 
         dst = np.array([0, 0, self.h, 0, 0, self.w, self.h, self.w], dtype = "float32").reshape(4, 2)
 
@@ -102,8 +103,11 @@ class FeatureExtractor:
     mag_sobel_kernel_size = 7
     dir_sobel_kernel_size = 7
 
-    def __init__(self):
-        pass
+    def __init__(self, blur_kernel_size=5, abs_sobel_kernel_size=7, mag_sobel_kernel_size=7, dir_sobel_kernel_size=7):
+        self.blur_kernel_size = blur_kernel_size
+        self.abs_sobel_kernel_size = abs_sobel_kernel_size
+        self.mag_sobel_kernel_size = mag_sobel_kernel_size
+        self.dir_sobel_kernel_size = dir_sobel_kernel_size
 
     def gaussian_blur(self, img):
         return cv2.GaussianBlur(img, (self.blur_kernel_size, self.blur_kernel_size), 0)
@@ -152,54 +156,40 @@ class FeatureExtractor:
 
         return dir_binary
 
-    def color_threshold(self, img):
+    def white_threshold(self, img):
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+        
+        white_2 = cv2.inRange(hls, (0, 255 - 60, 0), (255, 255, 60))
+        white_3 = cv2.inRange(hls, (200, 200, 200), (255, 255, 255))       
+        white = cv2.inRange(hsv, (0, 0, 255 - 68), (255, 20, 255))
+
+        return white | white_2 | white_3
+        
+    def yellow_threshold(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
 
-        yellow = cv2.inRange(hsv, (20, 100, 100), (50, 255, 255))
+        return cv2.inRange(hsv, (20, 100, 100), (40, 255, 255))
 
-        sensitivity_1 = 68
-        white = cv2.inRange(hsv, (0, 0, 255 - sensitivity_1), (255, 20, 255))
-
-        sensitivity_2 = 60
-        hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
-        white_2 = cv2.inRange(hls, (0, 255 - sensitivity_2, 0), (255, 255, sensitivity_2))
-        white_3 = cv2.inRange(hls, (200, 200, 200), (255, 255, 255))
-
-        bit_layer = yellow | white | white_2 | white_3
-
-        return bit_layer
-
-    def color_mask(self, hsv, low, high):
-        mask = cv2.inRange(hsv, low, high)
-
-        return mask
-
-    def apply_color_mask(self, hsv, img, low, high):
-        mask = cv2.inRange(hsv, low, high)
-        res = cv2.bitwise_and(img, img, mask=mask)
-
-        return res
+    def color_threshold(self, img):
+        return self.white_threshold(img) | self.yellow_threshold(img)
 
     def pipeline(self, img):
         img = self.gaussian_blur(img)
 
-        # Apply each of the thresholding functions
         gradx = self.abs_sobel_thresh(img, 1, 0, (10, 255))
-        grady = self.abs_sobel_thresh(img, 0, 1, (60, 255))
+        grady = self.abs_sobel_thresh(img, 0, 1, (10, 255))
 
         mag_binary = self.mag_thresh(img, (40, 255))
-        dir_binary = self.dir_threshold(img, (0.65, 1.05))
+        dir_binary = self.dir_threshold(img, (0.5, 1.1))
 
         combined = np.zeros_like(dir_binary)
-        combined[((gradx == 1) & (grady == 1)) | ((mag_binary == 1) & (dir_binary == 1))] = 1
+        combined[((gradx == 1) & (grady == 0)) | ((mag_binary == 1)) & (dir_binary == 0)] = 1
 
         color_binary = self.color_threshold(img)
 
-        combined = np.zeros_like(dir_binary)
-        combined[((gradx == 1) & (grady == 1)) | ((mag_binary == 1) & (dir_binary == 1))] = 1
-
         total_binary = np.zeros_like(combined)
-        total_binary[(color_binary > 0) | (combined > 0)] = 1
+        total_binary[(color_binary > 0) & (combined > 0)] = 1
 
         return total_binary
 
@@ -212,20 +202,40 @@ class LaneFinder:
     image = None
     histogram = []
     pixels = []
-    lane_inds = ([], []) # a tuple (left, right)
-    fits = ([], []) # a tuple (left, right)
-    curveads = ([], []) # a tuple (left, right, offset)
+    
+    left_lane_inds = []
+    right_lane_inds = []
+    
+    left_fit = []
+    right_fit = []
+    
+    left_curvead = 0
+    right_curvead = 0
+    offset = 0
 
     def __init__(self, image):
-        self.image = image
+        self.image = image.astype(np.uint8)
         self.histogram = self.histogram()
         self.pixels = self.nonzero()
-        self.lane_inds = self.split_lanes()
-        self.fits = self.fit_lines()
-        self.curveads = self.calc_curverads()
+        
+        (l, r) = self.split_lanes()
+        self.left_lane_inds = l
+        self.right_lane_inds = r
+        
+        (l, r) = self.fit_lines()
+        self.left_fit = l
+        self.right_fit = r
+        
+        (l, r, o) = self.calc_curveads()
+        self.left_curvead = l
+        self.right_curvead = r
+        self.offset = o
 
-    def histogram(self):
-        return np.sum(self.image[self.image.shape[0]/2:,:], axis=0)
+    def histogram(self, window=16):
+        x = np.sum(self.image[int(self.image.shape[0] / 2):,:], axis=0)
+        
+        # moving average
+        return np.convolve(x, np.ones((window,)) / window, mode='valid')
 
     def nonzero(self):
         nonzero = self.image.nonzero()
@@ -254,25 +264,13 @@ class LaneFinder:
 
         nonzeroy, nonzerox = self.pixels
 
-        # Step through the windows one by one
         for window in range(self.nwindows):
-            # Identify window boundaries in x and y (and right and left)
             win_y_low = self.image.shape[0] - (window + 1) * window_height
             win_y_high = self.image.shape[0] - window * window_height
             win_xleft_low = leftx_current - self.margin
             win_xleft_high = leftx_current + self.margin
             win_xright_low = rightx_current - self.margin
             win_xright_high = rightx_current + self.margin
-            #
-            # if win_xleft_high > self.image.shape[1] / 2 - margin:
-            #     win_xleft_high = self.image.shape[1] / 2 - margin
-            #
-            # if win_xright_low < self.image.shape[1] / 2 + margin:
-            #     win_xright_low = self.image.shape[1] / 2 + margin
-            #
-            # Draw the windows on the visualization image
-            #cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,255,0), 2)
-            #cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,255,0), 2)
 
             # Identify the nonzero pixels in x and y within the window
             good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
@@ -289,15 +287,13 @@ class LaneFinder:
             if len(good_right_inds) > self.minpix:
                 rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
 
-        # Concatenate the arrays of indices
         return np.concatenate(left_lane_inds), np.concatenate(right_lane_inds)
 
     def extract_pixels(self):
-        # Extract left and right line pixel positions
-        leftx = self.pixels[1][self.lane_inds[0]]
-        lefty = self.pixels[0][self.lane_inds[0]]
-        rightx = self.pixels[1][self.lane_inds[1]]
-        righty = self.pixels[0][self.lane_inds[1]]
+        leftx = self.pixels[1][self.left_lane_inds]
+        lefty = self.pixels[0][self.left_lane_inds]
+        rightx = self.pixels[1][self.right_lane_inds]
+        righty = self.pixels[0][self.right_lane_inds]
 
         return leftx, lefty, rightx, righty
 
@@ -305,7 +301,8 @@ class LaneFinder:
         if len(X) == 0:
             return None
 
-        return np.polyfit(X, y, degree, w=(np.max(X) - X) / np.max(X))
+        return np.polyfit(X, y, degree)
+        #return np.polyfit(X, y, degree, w=(np.max(X) - X) / np.max(X))
 
     def fit_lines(self):
         leftx, lefty, rightx, righty = self.extract_pixels()
@@ -316,29 +313,61 @@ class LaneFinder:
 
         return left_fit, right_fit
 
-    def calc_curverad(self, fit, y):
+    def calc_curvead(self, fit, y):
         ym_per_pix = 30 / 720 # meters per pixel in y dimension
 
         return ((1 + (2 * fit[0] * y * ym_per_pix + fit[1]) ** 2) ** 1.5) / np.absolute(2 * fit[0])
 
-    def calc_curverads(self):
+    def calc_curveads(self):
         leftx, lefty, rightx, righty = self.extract_pixels()
 
         y_eval = self.image.shape[0]
-        left_fit = self.fits[0]
-        right_fit = self.fits[1]
+        left_fit = self.left_fit
+        right_fit = self.right_fit
 
         ym_per_pix = 30 / 720 # meters per pixel in y dimension
         xm_per_pix = 3.7 / 700 # meters per pixel in x dimension
 
-        # Calculate the new radii of curvature
-        left_curverad = ((1 + (2 * left_fit[0] * y_eval * ym_per_pix + left_fit[1]) ** 2) ** 1.5) / np.absolute(2 * left_fit[0])
-        right_curverad = ((1 + (2 * right_fit[0] * y_eval * ym_per_pix + right_fit[1]) ** 2) ** 1.5) / np.absolute(2 * right_fit[0])
+        left_curvead = bottom_left_fitx = None
+        right_curvead = bottom_right_fitx = None
+        offset = None
+        
+        if not left_fit is None:
+            left_curvead = ((1 + (2 * left_fit[0] * y_eval * ym_per_pix + left_fit[1]) ** 2) ** 1.5) / np.absolute(2 * left_fit[0])
+            bottom_left_fitx = left_fit[0] * y_eval ** 2 + left_fit[1] * y_eval + left_fit[2]      
 
-        bottom_left_fitx = left_fit[0] * y_eval ** 2 + left_fit[1] * y_eval + left_fit[2]
-        bottom_right_fitx = right_fit[0] * y_eval ** 2 + right_fit[1] * y_eval + right_fit[2]
-        lane_center = (bottom_left_fitx + bottom_right_fitx) / 2
-        pixel_offset = lane_center - self.image.shape[1] / 2
-        offset = pixel_offset * xm_per_pix
+        if not right_fit is None:
+            right_curvead = ((1 + (2 * right_fit[0] * y_eval * ym_per_pix + right_fit[1]) ** 2) ** 1.5) / np.absolute(2 * right_fit[0])
+            bottom_right_fitx = right_fit[0] * y_eval ** 2 + right_fit[1] * y_eval + right_fit[2]
+            
+        if not left_fit is None and not right_fit is None:
+            lane_center = (bottom_left_fitx + bottom_right_fitx) / 2
+            pixel_offset = lane_center - self.image.shape[1] / 2
+            offset = pixel_offset * xm_per_pix
 
-        return left_curverad, right_curverad, offset
+        return left_curvead, right_curvead, offset
+    
+# Define a class to receive the characteristics of each line detection
+class Line():
+    def __init__(self):
+        self.fit = None
+        # was the line detected in the last iteration?
+        self.detected = False  
+        # x values of the last n fits of the line
+        self.recent_xfitted = [] 
+        #average x values of the fitted line over the last n iterations
+        self.bestx = None     
+        #polynomial coefficients averaged over the last n iterations
+        self.best_fit = None  
+        #polynomial coefficients for the most recent fit
+        self.current_fit = [np.array([False])]  
+        #radius of curvature of the line in some units
+        self.radius_of_curvature = None 
+        #distance in meters of vehicle center from the line
+        self.line_base_pos = None 
+        #difference in fit coefficients between last and new fits
+        self.diffs = np.array([0,0,0], dtype='float') 
+        #x values for detected line pixels
+        self.allx = None  
+        #y values for detected line pixels
+        self.ally = None    
